@@ -224,8 +224,10 @@ DOCUMENTATION = '''
         yaml: {key: connection.usetty}
 '''
 
+import functools
 import imp
 import os
+import time
 
 # NOTICE(cloudnull): The connection plugin imported using the full path to the
 #                    file because the ssh connection plugin is not importable.
@@ -242,6 +244,24 @@ if not hasattr(SSH, 'shlex_quote'):
     #                  if it's not found.
     from ansible.compat.six.moves import shlex_quote
     setattr(SSH, 'shlex_quote', shlex_quote)
+
+
+def func_retry(exceptiontocheck, tries=3, delay=.33):
+    """Retry via decorated function."""
+
+    def decorator_retry(func):
+        @functools.wraps(func)
+        def function_retry(*args, **kwargs):
+            _tries = tries
+            while _tries > 1:
+                _tries -= 1
+                try:
+                    return func(*args, **kwargs)
+                except exceptiontocheck:
+                    time.sleep(delay)
+            return func(*args, **kwargs)
+        return function_retry
+    return decorator_retry
 
 
 class Connection(SSH.Connection):
@@ -337,9 +357,13 @@ class Connection(SSH.Connection):
                                                      self.physical_host)
         self.host = self._play_context.remote_addr = physical_host_addr
 
+    @func_retry(exceptiontocheck=Exception)
+    def _run_cmd(self, cmd, in_data, sudoable):
+        """Execute command."""
+        return super(Connection, self).exec_command(cmd, in_data, sudoable)
+
     def exec_command(self, cmd, in_data=None, sudoable=True):
         """run a command on the remote host."""
-
         if self._container_check():
             # Remote user is normally set, but if it isn't, then default to 'root'
             if self._play_context.remote_user:
@@ -372,7 +396,7 @@ class Connection(SSH.Connection):
             chroot_command = 'chroot %s' % self.chroot_path
             cmd = '%s %s' % (chroot_command, cmd)
 
-        return super(Connection, self).exec_command(cmd, in_data, sudoable)
+        return self._run_cmd(cmd=cmd, in_data=in_data, sudoable=sudoable)
 
     def _chroot_check(self):
         if self.chroot_path is not None:
